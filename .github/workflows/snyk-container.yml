@@ -14,9 +14,10 @@ on:
   push:
     branches: [ "main" ]
   pull_request:
+    # The branches below must be a subset of the branches above
     branches: [ "main" ]
   schedule:
-    - cron: '43 20 * * 2'
+    - cron: '15 14 * *4'
 permissions:
   contents: read
 jobs:
@@ -42,15 +43,14 @@ jobs:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       with:
         image: your/image-to-test
-        args: --file=Dockerfile --org=${{ vars.SNYK_ORG }} --sarif-file-output=snyk.sarif
-      # Fix compatibility issues with GitHub Code Scanning by handling license findings
-      # that don't represent security vulnerabilities but cause upload errors
-    - name: Post-process sarif output
+        args: --file=Dockerfile --sarif-file-output=snyk.sarif --org=${{ vars.SNYK_ORG }}
+    # Fix null security severity values that can cause issues with license findings
+    # See https://github.com/github/codeql-action/issues/2187 for context
+    - name: Fix SARIF security severity values
       run: |
         sed -i 's/"security-severity": "null"/"security-severity": "0"/g' snyk.sarif
     - name: Upload result to GitHub Code Scanning
       uses: github/codeql-action/upload-sarif@v3
-      # Allow workflow to continue even if upload fails to prevent blocking other processes
-      continue-on-error: true
       with:
         sarif_file: snyk.sarif
+      continue-on-error: true
