@@ -1,159 +1,57 @@
-name: Snyk Docker Security Scan
-
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+# A sample workflow which checks out the code, builds a container
+# image using Docker and scans that image for vulnerabilities using
+# Snyk. The results are then uploaded to GitHub Security Code Scanning
+#
+# For more examples, including how to limit scans to only high-severity
+# issues, monitor images for newly disclosed vulnerabilities in Snyk and
+# fail PR checks for new vulnerabilities, see https://github.com/snyk/actions/
+name: Snyk Container
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ main ]
+    # The branches below must be a subset of the branches above
+    branches: [ "main" ]
   schedule:
-    # Ejecutar cada martes a las 8:00 UTC
-    - cron: '0 8 * * 2'
-  workflow_dispatch: # Permite ejecución manual
-
+    - cron: '43 20 * *2'
+permissions:
+  contents: read
 jobs:
-  snyk-docker-scan:
-    runs-on: ubuntu-latest
-    
+  snyk:
     permissions:
-      contents: read
-      security-events: write # Necesario para subir resultados SARIF
-      actions: read # Necesario para algunas acciones
-    
+      contents: read # for actions/checkout to fetch code
+      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
+      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
+    runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-      
-    - name: Build Docker image
-      id: build
-      run: |
-        # Crear un tag único para la imagen
-        IMAGE_TAG="snyk-scan:${{ github.sha }}"
-        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-        
-        # Construir la imagen
-        docker build -t "$IMAGE_TAG" .
-        
-        # Verificar que la imagen se construyó correctamente
-        docker images "$IMAGE_TAG"
-      continue-on-error: false
-      
+    - uses: actions/checkout@v4
+    - name: Build a Docker image
+      run: docker build -t your/image-to-test .
     - name: Run Snyk to check Docker image for vulnerabilities
-      id: snyk-scan
-      continue-on-error: true # Continuar aunque Snyk encuentre vulnerabilidades
+      # Snyk can be used to break the build when it detects vulnerabilities.
+      # In this case we want to upload the issues to GitHub Code Scanning
+      continue-on-error: true
       uses: snyk/actions/docker@master
       env:
+        # In order to use the Snyk Action you will need to have a Snyk API token.
+        # More details in https://github.com/snyk/actions#getting-your-snyk-token
+        # or you can signup for free at https://snyk.io/login
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       with:
-        image: ${{ steps.build.outputs.image_tag }}
-        args: |
-          --org=${{ vars.SNYK_ORG }}
-          --severity-threshold=low
-          --sarif-file-output=snyk-docker.sarif
-          --json-file-output=snyk-docker.json
-    
-    - name: Check if SARIF file exists
-      id: check-sarif
+        image: your/image-to-test
+        args: --file=Dockerfile --org=${{ vars.SNYK_ORG }} --sarif-file-output=snyk.sarif
+      # Fix compatibility issues with GitHub Code Scanning by handling license findings
+      # that don't represent security vulnerabilities but cause upload errors
+    - name: Post-process sarif output
       run: |
-        if [ -f "snyk-docker.sarif" ]; then
-          echo "sarif_exists=true" >> $GITHUB_OUTPUT
-          echo "✅ Archivo SARIF generado correctamente"
-        else
-          echo "sarif_exists=false" >> $GITHUB_OUTPUT
-          echo "⚠️ No se generó archivo SARIF"
-        fi
-    
-    - name: Fix SARIF security-severity null values
-      if: steps.check-sarif.outputs.sarif_exists == 'true'
-      run: |
-        echo "🔧 Corrigiendo valores null en security-severity..."
-        
-        # Verificar si el archivo contiene "security-severity": "null"
-        if grep -q '"security-severity": "null"' snyk-docker.sarif; then
-          echo "Encontrados valores null, reemplazando por '0'..."
-          sed -i 's/"security-severity": "null"/"security-severity": "0"/g' snyk-docker.sarif
-          echo "✅ Valores corregidos"
-        else
-          echo "ℹ️ No se encontraron valores null para corregir"
-        fi
-        
-        # Validar que el archivo SARIF sigue siendo válido JSON
-        if jq empty snyk-docker.sarif 2>/dev/null; then
-          echo "✅ Archivo SARIF sigue siendo JSON válido"
-        else
-          echo "❌ Error: El archivo SARIF no es JSON válido después de las modificaciones"
-          exit 1
-        fi
-    
-    - name: Upload SARIF file to GitHub Code Scanning
-      if: steps.check-sarif.outputs.sarif_exists == 'true'
+        sed -i 's/"security-severity": "null"/"security-severity": "0"/g' snyk.sarif
+    - name: Upload result to GitHub Code Scanning
       uses: github/codeql-action/upload-sarif@v3
+      # Allow workflow to continue even if upload fails to prevent blocking other processes
+      continue-on-error: true
       with:
-        sarif_file: snyk-docker.sarif
-        category: snyk-docker
-    
-    - name: Upload Snyk results as artifacts
-      if: always() # Siempre subir artefactos, incluso si hay fallos
-      uses: actions/upload-artifact@v4
-      with:
-        name: snyk-docker-results
-        path: |
-          snyk-docker.sarif
-          snyk-docker.json
-        retention-days: 30
-    
-    - name: Display scan summary
-      if: always()
-      run: |
-        echo "## 📊 Resumen del Escaneo de Seguridad Docker" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ "${{ steps.snyk-scan.outcome }}" = "success" ]; then
-          echo "✅ **Estado**: Escaneo completado exitosamente" >> $GITHUB_STEP_SUMMARY
-        elif [ "${{ steps.snyk-scan.outcome }}" = "failure" ]; then
-          echo "⚠️ **Estado**: Se encontraron vulnerabilidades" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ **Estado**: Error en el escaneo" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "🏷️ **Imagen analizada**: ${{ steps.build.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
-        echo "📅 **Fecha**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
-        echo "🔗 **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "snyk-docker.sarif" ]; then
-          echo "📄 **Archivo SARIF**: Generado y subido a Code Scanning" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        if [ -f "snyk-docker.json" ]; then
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📋 Detalles del Escaneo" >> $GITHUB_STEP_SUMMARY
-          echo '```json' >> $GITHUB_STEP_SUMMARY
-          head -20 snyk-docker.json >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
-    
-    - name: Comment PR with results
-      if: github.event_name == 'pull_request' && steps.check-sarif.outputs.sarif_exists == 'true'
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const fs = require('fs');
-          let comment = '## 🔒 Resultado del Escaneo de Seguridad Docker\n\n';
-          
-          if ('${{ steps.snyk-scan.outcome }}' === 'success') {
-            comment += '✅ No se encontraron vulnerabilidades críticas.\n';
-          } else {
-            comment += '⚠️ Se encontraron vulnerabilidades. Revisa la pestaña Security para más detalles.\n';
-          }
-          
-          comment += `\n📊 **Resultados disponibles en**: [Security tab](${context.payload.repository.html_url}/security/code-scanning)\n`;
-          comment += `🏷️ **Imagen**: \`${{ steps.build.outputs.image_tag }}\`\n`;
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: comment
-          });
+        sarif_file: snyk.sarif
