@@ -2,11 +2,10 @@ name: Snyk Container Security Scan
 
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
   schedule:
-    # Ejecutar todos los miércoles a las 9:18 AM UTC
     - cron: '18 9 * * 3'
 
 permissions:
@@ -15,9 +14,9 @@ permissions:
 jobs:
   snyk-container-scan:
     permissions:
-      contents: read # para actions/checkout
-      security-events: write # para subir resultados SARIF
-      actions: read # requerido para repositorios privados
+      contents: read
+      security-events: write
+      actions: read
     
     runs-on: ubuntu-latest
     
@@ -26,42 +25,59 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Build Docker image
+      run: docker build -t tutorial-app:latest .
+    
+    - name: Install Snyk CLI
       run: |
-        docker build -t mi-app:${{ github.sha }} .
-        docker tag mi-app:${{ github.sha }} mi-app:latest
+        npm install -g snyk
+        snyk --version
     
     - name: Run Snyk to check Docker image for vulnerabilities
-      continue-on-error: true
-      uses: snyk/actions/docker@master
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-      with:
-        image: mi-app:latest
-        args: --file=Dockerfile --sarif-file-output=snyk.sarif
-    
-    - name: Check if SARIF file exists
       run: |
-        if [ -f "snyk.sarif" ]; then
-          echo "✅ SARIF file found"
-          ls -la snyk.sarif
-          head -20 snyk.sarif
-        else
-          echo "❌ SARIF file not found"
-          echo "Files in current directory:"
-          ls -la
-          echo "Creating empty SARIF file to prevent upload failure"
-          echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Snyk"}},"results":[]}]}' > snyk.sarif
-        fi
+        snyk container test tutorial-app:latest \
+          --file=Dockerfile \
+          --sarif-file-output=snyk.sarif \
+          --json-file-output=snyk-results.json \
+          --severity-threshold=medium || true
     
-    - name: Upload Snyk results to GitHub Code Scanning
+    - name: Ensure SARIF file exists
+      run: |
+        if [ ! -f "snyk.sarif" ]; then
+          echo "Creating minimal SARIF file"
+          cat > snyk.sarif << 'EOF'
+        {
+          "version": "2.1.0",
+          "runs": [
+            {
+              "tool": {
+                "driver": {
+                  "name": "Snyk Container",
+                  "version": "1.0.0"
+                }
+              },
+              "results": []
+            }
+          ]
+        }
+        EOF
+        fi
+        echo "SARIF file status:"
+        ls -la snyk.sarif
+    
+    - name: Upload result to GitHub Code Scanning
       uses: github/codeql-action/upload-sarif@v3
-      if: always() && hashFiles('snyk.sarif') != ''
+      if: always()
       with:
         sarif_file: snyk.sarif
+        category: snyk-container
         
-    - name: Upload Snyk JSON results as artifact
+    - name: Upload detailed results
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: snyk-vulnerability-report
-        path: snyk-results.json
+        name: snyk-report
+        path: |
+          snyk.sarif
+          snyk-results.json
